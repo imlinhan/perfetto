@@ -6,6 +6,7 @@ import {
   ProviderConfig,
   ProviderTemplate,
   ProviderPanelAttrs,
+  HealthStatus,
   TYPE_ICONS,
   CATEGORY_LABELS,
   buildHeaders,
@@ -29,6 +30,12 @@ export class ProviderPanel implements m.ClassComponent<ProviderPanelAttrs> {
   private deleting: string | null = null;
   private backendUrl = '';
   private apiKey?: string;
+  private healthMap = new Map<string, HealthStatus>();
+  private effectiveConfig: Record<string, string> | null = null;
+  private effectiveExpanded = false;
+  private effectiveRevealedKeys = new Set<string>();
+  private loadingEffective = false;
+  private cloneSource: ProviderConfig | null = null;
 
   oninit(vnode: m.Vnode<ProviderPanelAttrs>) {
     this.backendUrl = vnode.attrs.backendUrl;
@@ -63,10 +70,33 @@ export class ProviderPanel implements m.ClassComponent<ProviderPanelAttrs> {
 
       this.providers = providersData.providers || [];
       this.templates = templatesData.templates || [];
+
+      if (this.providers.some((p) => p.isActive)) {
+        this.loadEffectiveConfig();
+      }
     } catch (e: unknown) {
       this.error = e instanceof Error ? e.message : 'Failed to load provider data';
     } finally {
       this.loading = false;
+      m.redraw();
+    }
+  }
+
+  private async loadEffectiveConfig() {
+    this.loadingEffective = true;
+    m.redraw();
+    try {
+      const res = await fetch(apiUrl(this.backendUrl, '/effective'), {
+        headers: buildHeaders(this.apiKey),
+      });
+      if (res.ok) {
+        const data = await res.json();
+        this.effectiveConfig = data.env || null;
+      }
+    } catch {
+      this.effectiveConfig = null;
+    } finally {
+      this.loadingEffective = false;
       m.redraw();
     }
   }
@@ -125,11 +155,13 @@ export class ProviderPanel implements m.ClassComponent<ProviderPanelAttrs> {
         latencyMs: result.latencyMs,
         error: result.error,
       };
+      this.healthMap.set(id, this.testResult.success ? 'passed' : 'failed');
     } catch (e: unknown) {
       this.testResult = {
         success: false,
         error: e instanceof Error ? e.message : 'Connection test failed',
       };
+      this.healthMap.set(id, 'failed');
     } finally {
       this.testingId = null;
       m.redraw();
@@ -148,6 +180,17 @@ export class ProviderPanel implements m.ClassComponent<ProviderPanelAttrs> {
   private startAdd() {
     this.view_mode = 'add';
     this.editingId = null;
+    this.cloneSource = null;
+    this.error = null;
+    this.success = null;
+    this.testResult = null;
+    m.redraw();
+  }
+
+  private cloneProvider(provider: ProviderConfig) {
+    this.view_mode = 'add';
+    this.editingId = null;
+    this.cloneSource = provider;
     this.error = null;
     this.success = null;
     this.testResult = null;
@@ -170,17 +213,20 @@ export class ProviderPanel implements m.ClassComponent<ProviderPanelAttrs> {
         backendUrl: this.backendUrl,
         apiKey: this.apiKey,
         editingProvider: editProvider,
+        cloneSource: this.cloneSource || undefined,
         templates: this.templates,
         onSaved: () => {
           this.success = this.view_mode === 'edit' ? 'Provider updated' : 'Provider created';
           this.view_mode = 'list';
           this.editingId = null;
+          this.cloneSource = null;
           this.loadData();
           this.clearSuccessAfterDelay();
         },
         onCancel: () => {
           this.view_mode = 'list';
           this.editingId = null;
+          this.cloneSource = null;
           this.error = null;
           this.testResult = null;
           m.redraw();
@@ -224,6 +270,7 @@ export class ProviderPanel implements m.ClassComponent<ProviderPanelAttrs> {
           : this.renderGrid(),
 
       this.renderTestResult(),
+      this.renderEffectiveConfig(),
     ]);
   }
 
@@ -257,6 +304,7 @@ export class ProviderPanel implements m.ClassComponent<ProviderPanelAttrs> {
       ...s.card,
       ...(isActive ? s.cardActive : {}),
     };
+    const health = this.healthMap.get(provider.id) || 'untested';
 
     return m('div', {style: cardStyle, key: provider.id}, [
       m('div', {style: s.cardHeader}, [
@@ -274,6 +322,13 @@ export class ProviderPanel implements m.ClassComponent<ProviderPanelAttrs> {
               CATEGORY_LABELS[provider.category] || provider.category),
           ]),
         ]),
+        m('div', {
+          style: {
+            ...s.healthDot,
+            ...(health === 'passed' ? s.healthPassed : health === 'failed' ? s.healthFailed : s.healthUntested),
+          },
+          title: health === 'passed' ? 'Test passed' : health === 'failed' ? 'Test failed' : 'Not tested',
+        }),
       ]),
 
       m('div', {style: s.cardModels}, [
@@ -304,6 +359,11 @@ export class ProviderPanel implements m.ClassComponent<ProviderPanelAttrs> {
           title: 'Edit',
         }, '✏️ Edit'),
         m('button', {
+          style: s.actionBtn,
+          onclick: () => this.cloneProvider(provider),
+          title: 'Clone',
+        }, '📋 Clone'),
+        m('button', {
           style: {...s.actionBtn, ...s.actionBtnDanger},
           onclick: () => this.deleteProvider(provider.id),
           disabled: this.deleting === provider.id || isActive,
@@ -332,5 +392,62 @@ export class ProviderPanel implements m.ClassComponent<ProviderPanelAttrs> {
         : m('span', `❌ Connection failed: ${this.testResult.error || 'Unknown error'}`),
     ]);
   }
-}
 
+  private renderEffectiveConfig(): m.Children {
+    const t = getTokens();
+    const s = getStyles(t);
+
+    if (!this.providers.some((p) => p.isActive)) return null;
+
+    return m('div', {style: s.effectiveSection}, [
+      m('div', {
+        style: s.effectiveHeader,
+        onclick: () => {
+          this.effectiveExpanded = !this.effectiveExpanded;
+          if (this.effectiveExpanded && !this.effectiveConfig) {
+            this.loadEffectiveConfig();
+          }
+        },
+      }, [
+        m('span', {style: {fontSize: '13px', fontWeight: 600, color: t.text}}, 'Effective Configuration'),
+        m('span', {style: {fontSize: '11px', color: t.textMuted}}, this.effectiveExpanded ? '▼' : '▶'),
+      ]),
+      this.effectiveExpanded ? this.renderEffectiveBody() : null,
+    ]);
+  }
+
+  private renderEffectiveBody(): m.Children {
+    const t = getTokens();
+    const s = getStyles(t);
+
+    if (this.loadingEffective) {
+      return m('div', {style: {padding: '16px', textAlign: 'center' as const, color: t.textMuted, fontSize: '13px'}}, '⏳ Loading...');
+    }
+    if (!this.effectiveConfig) {
+      return m('div', {style: {padding: '16px', color: t.textMuted, fontSize: '13px'}}, 'No active provider');
+    }
+
+    return m('div',
+      Object.entries(this.effectiveConfig).map(([key, value]) => {
+        const isRevealed = this.effectiveRevealedKeys.has(key);
+        const isSensitive = ['KEY', 'TOKEN', 'SECRET'].some((p) => key.includes(p));
+        const displayValue = isSensitive && !isRevealed ? '••••••••' : value;
+
+        return m('div', {style: s.effectiveRow}, [
+          m('span', {style: s.effectiveKey}, key),
+          m('div', {style: {display: 'flex' as const, alignItems: 'center' as const, gap: '6px'}}, [
+            m('span', {style: s.effectiveValue}, displayValue),
+            isSensitive ? m('button', {
+              style: s.effectiveEyeBtn,
+              onclick: () => {
+                if (isRevealed) this.effectiveRevealedKeys.delete(key);
+                else this.effectiveRevealedKeys.add(key);
+                m.redraw();
+              },
+            }, isRevealed ? '🙈' : '👁️') : null,
+          ]),
+        ]);
+      }),
+    );
+  }
+}

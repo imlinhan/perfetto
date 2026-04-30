@@ -20,6 +20,7 @@ export interface ProviderFormAttrs {
   backendUrl: string;
   apiKey?: string;
   editingProvider?: ProviderConfig;
+  cloneSource?: ProviderConfig;
   templates: ProviderTemplate[];
   onSaved: () => void;
   onCancel: () => void;
@@ -36,7 +37,7 @@ export class ProviderForm implements m.ClassComponent<ProviderFormAttrs> {
   private editingId: string | null = null;
 
   oninit(vnode: m.Vnode<ProviderFormAttrs>) {
-    const {editingProvider, templates} = vnode.attrs;
+    const {editingProvider, cloneSource, templates} = vnode.attrs;
     if (editingProvider) {
       this.isEdit = true;
       this.editingId = editingProvider.id;
@@ -47,6 +48,18 @@ export class ProviderForm implements m.ClassComponent<ProviderFormAttrs> {
         connection: {...editingProvider.connection},
         tuning: editingProvider.tuning ? {...editingProvider.tuning} : {},
         showTuning: !!editingProvider.tuning && Object.keys(editingProvider.tuning).length > 0,
+      };
+    } else if (cloneSource) {
+      const src = cloneSource;
+      this.isEdit = false;
+      this.editingId = null;
+      this.form = {
+        name: `${src.name} (Copy)`,
+        type: src.type,
+        models: {...src.models},
+        connection: {...src.connection},
+        tuning: src.tuning ? {...src.tuning} : {},
+        showTuning: !!src.tuning && Object.keys(src.tuning).length > 0,
       };
     } else {
       this.isEdit = false;
